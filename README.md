@@ -10,6 +10,7 @@ Personal Claude Code skill collection — store once, use on any machine.
 | [seo-optimization](./seo-optimization/) | SEO & web performance — Lighthouse 100, Core Web Vitals, accessibility, structured data |
 | [strapi-server](./strapi-server/) | Strapi v5 TypeScript backend with AWS RDS PostgreSQL — fast, clean, zero errors |
 | [backend-development](./backend-development/) | Backend systems — Node.js, REST/GraphQL APIs, auth, Docker, CI/CD, security (OWASP) |
+| [nodejs-realtime-backend](./nodejs-realtime-backend/) | Node.js realtime — Socket.io, SSE, WebSocket, Redis pub/sub, BullMQ, horizontal scaling |
 
 ## Installation
 
