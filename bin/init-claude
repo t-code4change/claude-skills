@@ -1,0 +1,1530 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ============================================================================
+# init-claude - Scaffold complete .claude/ directory with best practices
+# ============================================================================
+# Version: 2.0.0
+# Usage: init-claude [project-name] [--skip-claudekit] [--skip-skills-repo]
+# ============================================================================
+
+# ANSI colors
+CYAN='\033[36m'
+GREEN='\033[32m'
+YELLOW='\033[33m'
+BLUE='\033[34m'
+MAGENTA='\033[35m'
+RESET='\033[0m'
+
+info() { echo -e "${CYAN}[INFO]${RESET} $1"; }
+ok() { echo -e "${GREEN}[OK]${RESET} $1"; }
+warn() { echo -e "${YELLOW}[WARN]${RESET} $1"; }
+step() { echo -e "${BLUE}▸${RESET} $1"; }
+
+# ============================================================================
+# Parse Arguments
+# ============================================================================
+SKIP_CLAUDEKIT=false
+SKIP_SKILLS_REPO=false
+PROJECT_NAME=""
+
+for arg in "$@"; do
+    case "$arg" in
+        --skip-claudekit) SKIP_CLAUDEKIT=true ;;
+        --skip-skills-repo) SKIP_SKILLS_REPO=true ;;
+        -*) warn "Unknown flag: $arg" ;;
+        *) PROJECT_NAME="$arg" ;;
+    esac
+done
+
+if [[ -z "$PROJECT_NAME" ]]; then
+    PROJECT_NAME=$(basename "$(pwd)")
+    info "No project name provided, using current directory: $PROJECT_NAME"
+fi
+
+# ============================================================================
+# Check Prerequisites
+# ============================================================================
+info "Checking prerequisites..."
+
+if ! command -v claude &>/dev/null; then
+    warn "Claude CLI not found. Install with: npm install -g @anthropic-ai/claude-code"
+    warn "Continuing anyway - you can install it later"
+fi
+
+# ============================================================================
+# Create Directory Structure
+# ============================================================================
+info "Creating .claude/ directory structure..."
+
+CLAUDE_DIR=".claude"
+
+if [[ -d "$CLAUDE_DIR" ]]; then
+    warn ".claude/ already exists. Backing up to .claude.backup-$(date +%s)"
+    mv "$CLAUDE_DIR" ".claude.backup-$(date +%s)"
+fi
+
+# Create directory tree
+mkdir -p "$CLAUDE_DIR"/{hooks,skills,memory,agents,commands,workflows,scripts}
+
+ok "Directory structure created"
+
+# ============================================================================
+# Install ClaudeKit (agents, commands, hooks, workflows)
+# ============================================================================
+if [[ "$SKIP_CLAUDEKIT" == "false" ]]; then
+    info "Installing ClaudeKit (agents, commands, hooks, workflows)..."
+
+    if command -v npx &>/dev/null; then
+        step "Running claudekit setup --all --yes..."
+        npx claudekit setup --all --yes 2>/dev/null && ok "ClaudeKit installed" || {
+            warn "ClaudeKit setup failed. Continuing with basic scaffold."
+            warn "You can install later: npx claudekit setup --all --yes"
+        }
+    else
+        warn "npx not found. Skipping ClaudeKit installation."
+        warn "Install Node.js, then run: npx claudekit setup --all --yes"
+    fi
+else
+    info "Skipping ClaudeKit installation (--skip-claudekit flag)"
+fi
+
+# ============================================================================
+# Install ClaudeKit Skills Repository
+# ============================================================================
+if [[ "$SKIP_SKILLS_REPO" == "false" ]]; then
+    info "Installing ClaudeKit skills repository..."
+
+    if command -v git &>/dev/null; then
+        if [[ -d "$CLAUDE_DIR/skills/.git" ]]; then
+            step "Skills repo already exists, updating..."
+            (cd "$CLAUDE_DIR/skills" && git pull --quiet 2>/dev/null) && ok "Skills repo updated" || warn "Skills repo update failed"
+        else
+            step "Cloning skills repository..."
+            # Save any existing custom skills
+            CUSTOM_SKILLS_BACKUP=""
+            if [[ -d "$CLAUDE_DIR/skills/seo-optimization" ]] || [[ -d "$CLAUDE_DIR/skills/ios-pro" ]] || [[ -d "$CLAUDE_DIR/skills/react-typescript" ]]; then
+                CUSTOM_SKILLS_BACKUP=$(mktemp -d)
+                for skill in seo-optimization ios-pro react-typescript; do
+                    [[ -d "$CLAUDE_DIR/skills/$skill" ]] && cp -r "$CLAUDE_DIR/skills/$skill" "$CUSTOM_SKILLS_BACKUP/"
+                done
+            fi
+
+            # Clone into a temp dir and merge
+            TEMP_SKILLS=$(mktemp -d)
+            git clone --depth 1 --quiet https://github.com/anthropics/claude-code-skills.git "$TEMP_SKILLS" 2>/dev/null && {
+                # Copy skills (but preserve existing custom ones)
+                cp -rn "$TEMP_SKILLS"/* "$CLAUDE_DIR/skills/" 2>/dev/null || true
+                cp -rn "$TEMP_SKILLS"/.[!.]* "$CLAUDE_DIR/skills/" 2>/dev/null || true
+                rm -rf "$TEMP_SKILLS"
+                ok "Skills repository installed"
+            } || {
+                warn "Failed to clone skills repo. Continuing without."
+                warn "You can install later: cd .claude/skills && git clone https://github.com/anthropics/claude-code-skills.git ."
+            }
+
+            # Restore custom skills
+            if [[ -n "$CUSTOM_SKILLS_BACKUP" ]] && [[ -d "$CUSTOM_SKILLS_BACKUP" ]]; then
+                cp -r "$CUSTOM_SKILLS_BACKUP"/* "$CLAUDE_DIR/skills/" 2>/dev/null || true
+                rm -rf "$CUSTOM_SKILLS_BACKUP"
+            fi
+        fi
+    else
+        warn "git not found. Skipping skills repo installation."
+    fi
+else
+    info "Skipping skills repo installation (--skip-skills-repo flag)"
+fi
+
+# ============================================================================
+# Create settings.json - Optimized Configuration
+# ============================================================================
+step "Creating settings.json..."
+
+cat > "$CLAUDE_DIR/settings.json" <<'EOF'
+{
+  "model": "sonnet",
+  "permission_mode": "ask",
+  "auto_approve_safe_tools": true,
+  "auto_approve_read_tools": true,
+  "context_window_optimization": {
+    "auto_compress": true,
+    "preserve_recent_turns": 20
+  },
+  "experimental": {
+    "parallel_tool_calls": true,
+    "skill_autoloading": true
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Glob|Grep|Read|Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/scout-block/hook.sh"
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/scripts/statusline.sh",
+    "padding": 0
+  }
+}
+EOF
+
+ok "settings.json created"
+
+# ============================================================================
+# Create keybindings.json - Productivity Shortcuts
+# ============================================================================
+step "Creating keybindings.json..."
+
+cat > "$CLAUDE_DIR/keybindings.json" <<'EOF'
+{
+  "ctrl+shift+p": "/plan",
+  "ctrl+shift+c": "/cook",
+  "ctrl+shift+t": "/test",
+  "ctrl+shift+f": "/fix",
+  "ctrl+shift+r": "/review:codebase",
+  "ctrl+shift+d": "/design:fast"
+}
+EOF
+
+ok "keybindings.json created"
+
+# ============================================================================
+# Create Hooks
+# ============================================================================
+info "Creating hooks for security and quality..."
+
+# Scout-block hook (security)
+mkdir -p "$CLAUDE_DIR/hooks/scout-block"
+cat > "$CLAUDE_DIR/hooks/scout-block/hook.sh" <<'EOF'
+#!/usr/bin/env bash
+# Scout-block hook: Prevent accidental exposure of sensitive files
+
+# Block patterns
+SENSITIVE_PATTERNS=(
+    "*.env"
+    "*.pem"
+    "*.key"
+    "*credentials*"
+    "*secrets*"
+    "*.p12"
+    ".npmrc"
+)
+
+# Check if any tools are accessing sensitive files
+for pattern in "${SENSITIVE_PATTERNS[@]}"; do
+    if echo "$CLAUDE_TOOLS" | grep -q "$pattern"; then
+        echo "⛔️ BLOCKED: Attempting to access sensitive file matching: $pattern"
+        echo "💡 Tip: Add this pattern to .claudeignore if needed"
+        exit 1
+    fi
+done
+
+exit 0
+EOF
+chmod +x "$CLAUDE_DIR/hooks/scout-block/hook.sh"
+
+cat > "$CLAUDE_DIR/hooks/scout-block/config.json" <<'EOF'
+{
+  "trigger": "before_tool_call",
+  "tools": ["Read", "Glob", "Grep"],
+  "enabled": true
+}
+EOF
+
+# Format validation hook
+mkdir -p "$CLAUDE_DIR/hooks/format-check"
+cat > "$CLAUDE_DIR/hooks/format-check/hook.sh" <<'EOF'
+#!/usr/bin/env bash
+# Format-check hook: Validate code formatting before write
+
+FILE_PATH="$1"
+FILE_EXT="${FILE_PATH##*.}"
+
+case "$FILE_EXT" in
+    ts|tsx|js|jsx)
+        if command -v prettier &>/dev/null; then
+            prettier --check "$FILE_PATH" 2>/dev/null || {
+                echo "⚠️  Code formatting issue detected in $FILE_PATH"
+                echo "💡 Run: prettier --write \"$FILE_PATH\""
+            }
+        fi
+        ;;
+    swift)
+        if command -v swiftformat &>/dev/null; then
+            swiftformat --lint "$FILE_PATH" 2>/dev/null || {
+                echo "⚠️  Swift formatting issue detected"
+            }
+        fi
+        ;;
+esac
+
+exit 0
+EOF
+chmod +x "$CLAUDE_DIR/hooks/format-check/hook.sh"
+
+cat > "$CLAUDE_DIR/hooks/format-check/config.json" <<'EOF'
+{
+  "trigger": "before_write",
+  "enabled": false,
+  "note": "Enable by setting enabled: true. Requires prettier/swiftformat installed."
+}
+EOF
+
+ok "Hooks created (scout-block, format-check)"
+
+# ============================================================================
+# Create Example Commands
+# ============================================================================
+info "Creating example commands..."
+
+mkdir -p "$CLAUDE_DIR/commands"
+
+cat > "$CLAUDE_DIR/commands/quick-fix.md" <<'EOF'
+---
+description: ⚡ Quickly analyze and fix small issues
+argument-hint: [issue description]
+---
+
+You are in **Quick Fix Mode**. Your goal is to analyze and fix the issue as quickly as possible.
+
+## Issue
+<issue>$ARGUMENTS</issue>
+
+## Approach
+1. Read relevant files
+2. Identify root cause
+3. Apply minimal fix
+4. Verify it works
+
+## Rules
+- **Fast over perfect** - Get it working, then refine if needed
+- **Minimal changes** - Touch only what's necessary
+- **No over-engineering** - Resist the urge to refactor unrelated code
+- **Test the fix** - Run relevant tests or manual verification
+
+Start by reading the most likely problematic files.
+EOF
+
+cat > "$CLAUDE_DIR/commands/feature.md" <<'EOF'
+---
+description: ⚡⚡ Plan and implement a new feature
+argument-hint: [feature description]
+---
+
+You are implementing a new feature. Follow this process:
+
+## Feature Request
+<feature>$ARGUMENTS</feature>
+
+## Process
+
+### 1. Clarify Requirements (use AskUserQuestion if unclear)
+- What exactly should this feature do?
+- What are the edge cases?
+- What's the expected behavior?
+
+### 2. Plan Approach
+- Identify affected files
+- List implementation steps
+- Consider architecture impact
+
+### 3. Implement
+- Write clean, tested code
+- Follow existing patterns
+- Keep it simple (YAGNI, KISS, DRY)
+
+### 4. Verify
+- Run tests
+- Manual testing
+- Update documentation
+
+Start by clarifying requirements if anything is unclear.
+EOF
+
+ok "Example commands created (quick-fix, feature)"
+
+# ============================================================================
+# Create Workflows
+# ============================================================================
+info "Creating workflow documents..."
+
+mkdir -p "$CLAUDE_DIR/workflows"
+
+cat > "$CLAUDE_DIR/workflows/development-rules.md" <<'EOF'
+# Development Rules
+
+Core principles for all code changes in this project.
+
+## Code Quality
+
+### YAGNI (You Aren't Gonna Need It)
+- Don't add functionality until it's necessary
+- Resist premature abstraction
+- Build for today's requirements, not imagined future ones
+
+### KISS (Keep It Simple, Stupid)
+- Simplest solution that works is usually best
+- Prefer explicit over clever
+- Optimize for readability, not cleverness
+
+### DRY (Don't Repeat Yourself)
+- Extract repeated logic into functions
+- Use abstractions when they reduce duplication
+- But don't DRY too early (wait for 3rd repetition)
+
+## Testing
+- Write tests for new features
+- Fix tests when modifying existing code
+- Aim for >70% coverage on critical paths
+
+## Documentation
+- Update README when changing public APIs
+- Add comments for non-obvious logic
+- Keep CLAUDE.md in sync with architecture changes
+
+## Git Workflow
+- Atomic commits (one logical change per commit)
+- Descriptive commit messages
+- Review diff before committing
+
+## Performance
+- Don't optimize prematurely
+- Profile before optimizing
+- Document performance-critical code
+
+## Security
+- Never commit secrets (.env, API keys, credentials)
+- Validate user input
+- Use parameterized queries (prevent SQL injection)
+- Sanitize output (prevent XSS)
+EOF
+
+cat > "$CLAUDE_DIR/workflows/orchestration-protocol.md" <<'EOF'
+# Orchestration Protocol
+
+How to coordinate complex tasks involving multiple steps or agents.
+
+## When to Use
+- Feature spans multiple files/modules
+- Requires sequential steps
+- Benefits from parallelization
+- Needs coordination between subsystems
+
+## Protocol
+
+### 1. Decompose
+Break task into logical subtasks:
+- Each subtask should be independently testable
+- Identify dependencies between subtasks
+- Estimate complexity (simple/medium/complex)
+
+### 2. Plan Execution Strategy
+**Sequential**: Tasks depend on each other
+```
+A → B → C → D
+```
+
+**Parallel**: Independent tasks
+```
+A ─┬─ B
+   ├─ C
+   └─ D
+```
+
+**Hybrid**: Mixed dependencies
+```
+A → B ─┬─ C
+       └─ D → E
+```
+
+### 3. Execute
+- Start with foundations (data models, core logic)
+- Then build features on top
+- Finish with integration and testing
+
+### 4. Verify
+- Unit tests for each component
+- Integration tests for interactions
+- Manual testing of end-to-end flow
+
+## Example
+
+Task: "Add user authentication"
+
+Decomposition:
+1. User model + DB migration (foundation)
+2. Auth service (business logic)
+3. Auth endpoints (API)
+4. Auth UI components (frontend)
+5. Integration tests
+
+Execution: Sequential 1→2→3, then parallel 4, then 5
+EOF
+
+ok "Workflows created (development-rules, orchestration-protocol)"
+
+# ============================================================================
+# Create StatusLine Script
+# ============================================================================
+info "Creating statusline script..."
+
+mkdir -p "$CLAUDE_DIR/scripts"
+
+cat > "$CLAUDE_DIR/scripts/statusline.sh" <<'EOF'
+#!/usr/bin/env bash
+# Simple statusline showing git branch and status
+
+if command -v git &>/dev/null && git rev-parse --git-dir &>/dev/null 2>&1; then
+    BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+
+    # Check if working directory is clean
+    if git diff-index --quiet HEAD -- 2>/dev/null; then
+        STATUS="✓"
+    else
+        STATUS="●"
+    fi
+
+    echo "[$BRANCH $STATUS]"
+else
+    echo "[no git]"
+fi
+EOF
+chmod +x "$CLAUDE_DIR/scripts/statusline.sh"
+
+ok "StatusLine script created"
+
+# ============================================================================
+# Create iOS Pro Skill
+# ============================================================================
+info "Creating skills..."
+
+mkdir -p "$CLAUDE_DIR/skills/ios-pro"
+
+cat > "$CLAUDE_DIR/skills/ios-pro/README.md" <<'EOF'
+# iOS Development Pro Skill
+
+Professional iOS development following 2024-2026 best practices.
+
+## Stack Recommendations
+
+### Small Apps (<10 screens)
+- SwiftUI + MVVM
+- URLSession + async/await
+- SwiftData (iOS 17+)
+- NavigationStack
+
+### Medium Apps (10-20 screens)
+- SwiftUI + MVVM + Coordinator
+- URLSession + async/await
+- SwiftData or Core Data
+- Dependency Injection (Factory)
+
+### Large Apps (20+ screens)
+- SwiftUI + TCA (Composable Architecture)
+- Alamofire + Moya
+- Core Data + caching layer
+- TCA Navigation
+
+## Trending UI (2024-2026)
+
+**Glassmorphism** - Primary trend:
+```swift
+.background(.ultraThinMaterial)
+.cornerRadius(16)
+.overlay(
+    RoundedRectangle(cornerRadius: 16)
+        .stroke(Color.white.opacity(0.2), lineWidth: 1)
+)
+```
+
+## Essential Tools
+
+- **XcodeGen/Tuist**: Project generation
+- **SwiftGen**: Type-safe resources (9.2k stars)
+- **Fastlane**: Build/deploy automation
+- **SwiftLint**: Code quality
+- **Lottie**: Animations (native SwiftUI 4.3+)
+- **Kingfisher**: Image caching (pure Swift)
+
+## Dependencies
+
+**Always use Swift Package Manager (SPM), never CocoaPods**
+
+Popular libraries:
+- Alamofire (42k stars) - Networking
+- Kingfisher (23k stars) - Image loading
+- Lottie (25k stars) - Animations
+- SnapKit (20k stars) - Auto Layout DSL
+- SwiftLint (18k stars) - Linting
+
+## Build Configuration
+
+### project.yml (XcodeGen)
+```yaml
+name: YourApp
+options:
+  bundleIdPrefix: com.yourcompany
+  deploymentTarget:
+    iOS: 17.0
+settings:
+  SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+  SUPPORTS_MACCATALYST: false
+  SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: false
+
+targets:
+  YourApp:
+    type: application
+    platform: iOS
+    sources: [Sources]
+
+  YourAppTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests]
+```
+
+### Fastfile
+```ruby
+default_platform(:ios)
+
+platform :ios do
+  desc "Build and run on simulator"
+  lane :sim do
+    scan(
+      scheme: "YourApp",
+      destination: "platform=iOS Simulator,name=iPhone 15 Pro"
+    )
+  end
+
+  desc "Run tests"
+  lane :test do
+    scan(scheme: "YourApp")
+  end
+end
+```
+
+## Critical Build Rules
+
+1. **UNIQUE FILENAMES**: Every .swift file must have unique name across entire project
+   - Xcode treats filenames as flat namespace
+   - Bad: `Views/Home/ContentView.swift` + `Views/Profile/ContentView.swift`
+   - Good: `HomeContentView.swift` + `ProfileContentView.swift`
+
+2. **Test Target Type**: Use `bundle.unit-test` not `unitTests`
+
+3. **No CocoaPods**: Only SPM dependencies
+
+## Architecture Patterns
+
+### MVVM Example
+```swift
+// Model
+struct Event: Identifiable {
+    let id: UUID
+    var title: String
+    var date: Date
+}
+
+// ViewModel
+@Observable
+class EventsViewModel {
+    var events: [Event] = []
+
+    func loadEvents() async {
+        // Business logic here
+    }
+}
+
+// View
+struct EventsView: View {
+    @State private var viewModel = EventsViewModel()
+
+    var body: some View {
+        List(viewModel.events) { event in
+            EventRow(event: event)
+        }
+        .task {
+            await viewModel.loadEvents()
+        }
+    }
+}
+```
+
+### Glassmorphism UI
+```swift
+struct GlassCard<Content: View>: View {
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .padding()
+            .background(.ultraThinMaterial)
+            .cornerRadius(16)
+            .overlay(
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(Color.white.opacity(0.2), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.1), radius: 10, y: 5)
+    }
+}
+```
+
+## Testing
+
+### XCTest + Snapshot Testing
+```swift
+import XCTest
+import SnapshotTesting
+@testable import YourApp
+
+final class EventsViewTests: XCTestCase {
+    func testEventsView() {
+        let view = EventsView()
+        assertSnapshot(matching: view, as: .image)
+    }
+}
+```
+
+## Common Pitfalls
+
+1. ❌ Using @Query in SwiftData (causes crashes)
+   ✅ Use @State + modelContext.fetch() instead
+
+2. ❌ Mixing UIKit and SwiftUI unnecessarily
+   ✅ Pure SwiftUI for new projects
+
+3. ❌ Not using @Observable (iOS 17+)
+   ✅ Replace ObservableObject with @Observable
+
+4. ❌ Hardcoded colors/strings
+   ✅ Use SwiftGen for type-safe resources
+
+## Production Checklist
+
+- [ ] SwiftLint configured and passing
+- [ ] SwiftGen for assets/strings
+- [ ] Unit tests >70% coverage
+- [ ] Snapshot tests for key screens
+- [ ] Fastlane configured
+- [ ] Error handling implemented
+- [ ] Accessibility labels added
+- [ ] Dark mode supported
+- [ ] iPad layout tested
+- [ ] Performance profiled (Instruments)
+
+## Activation
+
+When building iOS apps, Claude will automatically use these guidelines if this skill is present in `.claude/skills/`.
+
+EOF
+
+ok "iOS Pro skill created"
+
+# ============================================================================
+# Create React/TypeScript Skill
+# ============================================================================
+mkdir -p "$CLAUDE_DIR/skills/react-typescript"
+
+cat > "$CLAUDE_DIR/skills/react-typescript/README.md" <<'EOF'
+# React + TypeScript Pro Skill
+
+Modern React development with TypeScript best practices (2024-2026).
+
+## Stack
+
+- **React 18+**: Concurrent features, Suspense, Transitions
+- **TypeScript 5+**: Strict mode, no implicit any
+- **Build Tools**: Vite (fast) or Next.js (full-stack)
+- **State**: Zustand (simple), Jotai (atomic), TanStack Query (server)
+- **Styling**: Tailwind CSS + shadcn/ui components
+
+## Project Structure
+
+```
+src/
+├── components/
+│   ├── ui/              # shadcn/ui components
+│   └── features/        # Feature-specific components
+├── hooks/               # Custom hooks
+├── lib/                 # Utilities
+├── stores/              # Zustand stores
+└── app/                 # Next.js app router (if using Next.js)
+```
+
+## Modern Patterns
+
+### Server Components (Next.js App Router)
+```tsx
+// app/page.tsx - Server Component by default
+async function HomePage() {
+  const data = await fetch('https://api.example.com/data')
+  const items = await data.json()
+
+  return (
+    <div>
+      <h1>Home</h1>
+      <ItemList items={items} />
+    </div>
+  )
+}
+```
+
+### Client Component with Suspense
+```tsx
+'use client'
+
+import { Suspense } from 'react'
+import { useSuspenseQuery } from '@tanstack/react-query'
+
+function UserProfile() {
+  const { data } = useSuspenseQuery({
+    queryKey: ['user'],
+    queryFn: fetchUser,
+  })
+
+  return <div>{data.name}</div>
+}
+
+export default function Page() {
+  return (
+    <Suspense fallback={<Loading />}>
+      <UserProfile />
+    </Suspense>
+  )
+}
+```
+
+### Type-Safe State Management (Zustand)
+```tsx
+import { create } from 'zustand'
+
+interface TodoStore {
+  todos: Todo[]
+  addTodo: (todo: Todo) => void
+  removeTodo: (id: string) => void
+}
+
+const useTodoStore = create<TodoStore>((set) => ({
+  todos: [],
+  addTodo: (todo) => set((state) => ({
+    todos: [...state.todos, todo]
+  })),
+  removeTodo: (id) => set((state) => ({
+    todos: state.todos.filter(t => t.id !== id)
+  })),
+}))
+```
+
+## Essential Libraries
+
+- **@tanstack/react-query** (40k stars) - Server state management
+- **zustand** (42k stars) - Simple client state
+- **react-hook-form** (40k stars) - Form handling
+- **zod** (30k stars) - Runtime validation
+- **tailwindcss** (78k stars) - Utility CSS
+- **shadcn/ui** - Copy-paste components (Radix + Tailwind)
+
+## TypeScript Best Practices
+
+```tsx
+// ✅ Strict typing
+interface User {
+  id: string
+  name: string
+  email: string
+}
+
+// ✅ Discriminated unions for variants
+type Result<T> =
+  | { status: 'success'; data: T }
+  | { status: 'error'; error: string }
+  | { status: 'loading' }
+
+// ✅ Generic components
+interface ListProps<T> {
+  items: T[]
+  renderItem: (item: T) => React.ReactNode
+}
+
+function List<T>({ items, renderItem }: ListProps<T>) {
+  return <>{items.map(renderItem)}</>
+}
+```
+
+## Performance Optimization
+
+1. **Code Splitting**: Use dynamic imports
+   ```tsx
+   const HeavyComponent = lazy(() => import('./HeavyComponent'))
+   ```
+
+2. **Memoization**: Only when needed
+   ```tsx
+   const expensiveValue = useMemo(() => computeExpensive(data), [data])
+   ```
+
+3. **Virtualization**: For long lists
+   ```tsx
+   import { useVirtualizer } from '@tanstack/react-virtual'
+   ```
+
+## Common Pitfalls
+
+1. ❌ Using `any` type
+   ✅ Use `unknown` and narrow with type guards
+
+2. ❌ Not using Suspense with async components
+   ✅ Wrap in `<Suspense>` boundary
+
+3. ❌ Client-side data fetching in Next.js
+   ✅ Use Server Components for initial data
+
+4. ❌ Prop drilling
+   ✅ Use Zustand or React Context
+
+## Activation
+
+This skill is automatically available when `.claude/skills/react-typescript/` exists.
+
+EOF
+
+ok "React TypeScript skill created"
+
+# ============================================================================
+# Create SEO Optimization Skill
+# ============================================================================
+mkdir -p "$CLAUDE_DIR/skills/seo-optimization/references"
+mkdir -p "$CLAUDE_DIR/skills/seo-optimization/scripts"
+
+cat > "$CLAUDE_DIR/skills/seo-optimization/SKILL.md" <<'SEOEOF'
+---
+name: seo-optimization
+description: Optimize website performance, accessibility, SEO, and best practices targeting Lighthouse 100 scores. This skill should be used when auditing PageSpeed/Lighthouse scores, fixing WCAG color contrast issues, resolving form accessibility problems, making links crawlable, fixing canonical URLs, validating robots.txt/sitemap.xml, optimizing fonts and images, implementing lazy loading, adding JSON-LD structured data, or improving Core Web Vitals (LCP, CLS, FID/INP).
+version: 1.0.0
+---
+
+# SEO & Website Optimization Skill
+
+Audit and fix web performance, accessibility, SEO, and best practices using Lighthouse CLI.
+
+## Workflow
+
+### 1. Audit with Lighthouse CLI
+```bash
+npx lighthouse <URL> --output=json --output-path=./lighthouse-report.json --chrome-flags="--headless --no-sandbox"
+npx lighthouse <URL> --preset=desktop --output=json --output-path=./lighthouse-desktop.json --chrome-flags="--headless --no-sandbox"
+```
+
+Parse scores: `jq '.categories | to_entries[] | {(.key): .value.score}' lighthouse-report.json`
+Parse failures: `jq '[.audits | to_entries[] | select(.value.score != null and .value.score < 1)] | sort_by(.value.score) | .[:20] | .[] | {id: .key, score: .value.score, title: .value.title}' lighthouse-report.json`
+
+### 2. Fix Issues by Category
+- **Accessibility** → `references/accessibility.md` (contrast, labels, headings, ARIA)
+- **SEO** → `references/seo-technical.md` (canonical, robots, crawlable links, meta)
+- **Performance** → `references/performance.md` (fonts, images, lazy loading, caching)
+- **Structured Data** → `references/structured-data.md` (JSON-LD schemas)
+
+### 3. Verify & Deploy
+After fixes: rebuild → redeploy → re-run Lighthouse → confirm scores reach target.
+Use parallel agents for independent fix categories.
+
+## Quick Reference: Common Lighthouse Failures
+
+| Audit ID | Category | Fix Reference |
+|---|---|---|
+| color-contrast | A11y | `references/accessibility.md` |
+| label | A11y | `references/accessibility.md` |
+| crawlable-anchors | SEO | `references/seo-technical.md` |
+| link-text | SEO | `references/seo-technical.md` |
+| canonical | SEO | `references/seo-technical.md` |
+| largest-contentful-paint | Perf | `references/performance.md` |
+SEOEOF
+
+cat > "$CLAUDE_DIR/skills/seo-optimization/references/accessibility.md" <<'ACCEOF'
+# Accessibility Fixes (WCAG AA)
+
+## Color Contrast
+WCAG AA: **4.5:1** normal text, **3:1** large text (>=18.66px bold or >=24px).
+
+| Original | Replacement | Ratio on white | Context |
+|---|---|---|---|
+| `#EC1E24` | `#E31C22` | 4.73:1 | Brand red on white bg |
+| `#888` | `#767676` | 4.54:1 | Placeholder on white bg |
+| `#888` | `#B0B0B0` | 4.65:1 on `#3D3D3D` | Light text on dark bg |
+
+Fix: grep for color hex codes, replace with compliant alternatives. Check both 3-digit and 6-digit forms.
+
+## Form Labels
+Every input needs label association:
+- Explicit: `<label htmlFor="id">` + `<input id="id">`
+- Implicit: `<label><input/></label>`
+- ARIA: `<input aria-label="description">`
+
+## Heading Order
+No skipping levels: h1 -> h2 -> h3. One h1 per page.
+
+## Select Element Labels
+Every `<select>` needs `<label htmlFor>`, `aria-label`, or `aria-labelledby`.
+ACCEOF
+
+cat > "$CLAUDE_DIR/skills/seo-optimization/references/seo-technical.md" <<'SEOTECH'
+# Technical SEO Fixes
+
+## Canonical URL
+Must match accessed domain. Next.js: set `metadataBase` in layout metadata.
+Common issue: env var trailing newline. Use `printf` not `echo` for CLI env var setting.
+
+## robots.txt
+Next.js: `src/app/robots.ts` with rules + sitemap URL from env var.
+
+## Crawlable Links
+Must be `<a href="...">`. Invalid: `<button>` wrapping `<a>`, `<a>` without href.
+Fix: `<div role="button">` + proper `<a href>`.
+
+## Descriptive Link Text
+"Learn more" fails. Fix: "Learn more about [topic]" or use `aria-label`.
+
+## Meta Tags
+- `<title>`: 50-60 chars, `<meta description>`: 150-160 chars
+- `<meta viewport>`: width=device-width, initial-scale=1
+SEOTECH
+
+cat > "$CLAUDE_DIR/skills/seo-optimization/references/performance.md" <<'PERFEOF'
+# Performance Optimization
+
+## Fonts
+Self-host with next/font. Use `display: swap`. Limit weights to actual usage.
+
+## Images
+Next.js Image: `sizes` prop for fill images. `priority` for above-fold. Default lazy loading.
+
+## LCP (< 2.5s)
+Preload LCP image. Use `priority` on hero images. Minimize TTFB.
+
+## CLS (< 0.1)
+Set width/height on images. Reserve space for dynamic content. Use `font-display: swap`.
+
+## Script Loading
+Next.js Script: `afterInteractive` for analytics, `lazyOnload` for low-priority.
+
+## Caching
+Static assets: `Cache-Control: public, max-age=31536000, immutable`.
+PERFEOF
+
+cat > "$CLAUDE_DIR/skills/seo-optimization/references/structured-data.md" <<'SDEOF'
+# Structured Data (JSON-LD)
+
+## Common Schemas
+- Organization: name, url, logo, contactPoint, sameAs
+- LocalBusiness: address, telephone, openingHours
+- Product: name, description, brand, offers
+- FAQPage: mainEntity with Question/Answer pairs
+- BreadcrumbList: itemListElement with position, name, item
+
+## Next.js Implementation
+Use `<script type="application/ld+json">` with `dangerouslySetInnerHTML`.
+Validate: https://search.google.com/test/rich-results
+SDEOF
+
+cat > "$CLAUDE_DIR/skills/seo-optimization/scripts/lighthouse-audit.sh" <<'LHEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+URL="${1:?Usage: lighthouse-audit.sh <URL> [desktop|mobile|both]}"
+MODE="${2:-both}"
+FLAGS="--headless --no-sandbox --disable-gpu"
+run_audit() {
+  local p="$1" o="$2" f="--output=json --output-path=$o --chrome-flags=\"$FLAGS\""
+  [ "$p" = "desktop" ] && f="$f --preset=desktop"
+  echo "Running $p audit..."
+  eval npx lighthouse "$URL" $f 2>/dev/null
+  jq -r '.categories | to_entries[] | "  \(.key): \(.value.score * 100)%"' "$o"
+}
+case "$MODE" in
+  desktop) run_audit "desktop" "lighthouse-desktop.json" ;;
+  mobile) run_audit "mobile" "lighthouse-mobile.json" ;;
+  both) run_audit "desktop" "lighthouse-desktop.json"; run_audit "mobile" "lighthouse-mobile.json" ;;
+esac
+LHEOF
+chmod +x "$CLAUDE_DIR/skills/seo-optimization/scripts/lighthouse-audit.sh"
+
+ok "SEO Optimization skill created"
+
+# ============================================================================
+# Create .mcp.json.example
+# ============================================================================
+step "Creating .mcp.json.example..."
+
+cat > "$CLAUDE_DIR/.mcp.json.example" <<'EOF'
+{
+  "mcpServers": {
+    "figma": {
+      "command": "npx",
+      "args": ["-y", "mcp-figma@latest"],
+      "env": {
+        "FIGMA_API_KEY": "your-figma-api-key-here"
+      }
+    }
+  }
+}
+EOF
+
+ok ".mcp.json.example created"
+
+# ============================================================================
+# Create .ckignore
+# ============================================================================
+step "Creating .ckignore..."
+
+cat > "$CLAUDE_DIR/.ckignore" <<'EOF'
+# ClaudeKit Ignore File
+# Patterns listed here will be blocked by the scout-block hook
+
+# Default patterns
+node_modules
+__pycache__
+.git
+dist
+build
+.next
+.nuxt
+coverage
+EOF
+
+ok ".ckignore created"
+
+# ============================================================================
+# Create ClaudeKit Skills Guide
+# ============================================================================
+step "Creating ClaudeKit installation guide..."
+
+cat > "$CLAUDE_DIR/skills/CLAUDEKIT-INSTALLATION.md" <<'EOF'
+# ClaudeKit Skills Installation
+
+Add 40+ official Anthropic skills to your project.
+
+## Quick Install
+
+```bash
+# Clone ClaudeKit skills repository
+cd .claude/skills
+git clone https://github.com/anthropics/claude-code-skills.git claudekit-temp
+
+# Copy skills (select what you need)
+cp -r claudekit-temp/aesthetic .
+cp -r claudekit-temp/ai-multimodal .
+cp -r claudekit-temp/backend-development .
+cp -r claudekit-temp/better-auth .
+cp -r claudekit-temp/chrome-devtools .
+cp -r claudekit-temp/claude-code .
+cp -r claudekit-temp/code-review .
+cp -r claudekit-temp/databases .
+cp -r claudekit-temp/debugging .
+cp -r claudekit-temp/devops .
+cp -r claudekit-temp/docs-seeker .
+cp -r claudekit-temp/frontend-development .
+cp -r claudekit-temp/frontend-design .
+cp -r claudekit-temp/media-processing .
+cp -r claudekit-temp/mobile-development .
+cp -r claudekit-temp/payment-integration .
+cp -r claudekit-temp/planning .
+cp -r claudekit-temp/problem-solving .
+cp -r claudekit-temp/repomix .
+cp -r claudekit-temp/sequential-thinking .
+cp -r claudekit-temp/shopify .
+cp -r claudekit-temp/skill-creator .
+cp -r claudekit-temp/threejs .
+cp -r claudekit-temp/ui-styling .
+cp -r claudekit-temp/web-frameworks .
+
+# Cleanup
+rm -rf claudekit-temp
+
+# Install dependencies (if needed)
+cd aesthetic && npm install && cd ..
+cd ai-multimodal && pip install -r requirements.txt && cd ..
+# ... repeat for skills with dependencies
+```
+
+## Or: Install All ClaudeKit Skills
+
+```bash
+cd .claude/skills
+git clone https://github.com/anthropics/claude-code-skills.git .
+./install.sh  # Installs all dependencies
+```
+
+## Available Skills
+
+- **aesthetic** - Beautiful UI design principles
+- **ai-multimodal** - Google Gemini API for vision/audio
+- **backend-development** - Node.js, Python, Go, Rust backends
+- **better-auth** - Authentication framework
+- **chrome-devtools** - Puppeteer browser automation
+- **claude-code** - Claude Code CLI help
+- **code-review** - Systematic code review
+- **databases** - MongoDB, PostgreSQL
+- **debugging** - Systematic debugging framework
+- **devops** - Cloudflare, Docker, GCP
+- **docs-seeker** - Search technical docs
+- **frontend-development** - React, TypeScript patterns
+- **frontend-design** - Beautiful interfaces
+- **media-processing** - FFmpeg, ImageMagick
+- **mobile-development** - React Native, Flutter, Swift
+- **payment-integration** - SePay, Polar
+- **planning** - Technical solution planning
+- **problem-solving** - Systematic problem-solving
+- **repomix** - Package codebases for AI
+- **sequential-thinking** - Multi-step analysis
+- **shopify** - Shopify app development
+- **skill-creator** - Create custom skills
+- **threejs** - 3D web experiences
+- **ui-styling** - shadcn/ui, Tailwind CSS
+- **web-frameworks** - Next.js, Turborepo
+
+## Custom Skills Priority
+
+The skills in `.claude/skills/` are loaded first. If you have custom skills with the same name as ClaudeKit skills, your custom skills take precedence.
+
+**Recommendation**: Keep ios-pro and react-typescript as custom skills, add ClaudeKit skills as needed.
+
+## Resources
+
+- ClaudeKit Repo: https://github.com/anthropics/claude-code-skills
+- Skills Documentation: https://support.claude.com/en/articles/12512198-creating-custom-skills
+EOF
+
+ok "ClaudeKit installation guide created"
+
+# ============================================================================
+# Create CLAUDE.md Template
+# ============================================================================
+step "Creating CLAUDE.md template..."
+
+cat > "$CLAUDE_DIR/CLAUDE.md" <<EOF
+# $PROJECT_NAME
+
+**Type**: [Web App / iOS App / CLI Tool / Library / etc.]
+**Stack**: [Primary technologies used]
+**Status**: [In Development / Production / Archived]
+
+## Quick Context
+
+[2-3 sentence overview of what this project does and why it exists]
+
+## Project Structure
+
+\`\`\`
+$PROJECT_NAME/
+├── src/                 # Source code
+├── tests/              # Test files
+├── docs/               # Documentation
+├── scripts/            # Build/utility scripts
+└── .claude/            # Claude Code configuration
+\`\`\`
+
+## Key Files
+
+- [\`src/main.*\`](src/main.*) - Entry point
+- [\`package.json\`](package.json) - Dependencies (if Node.js)
+- [\`README.md\`](README.md) - User-facing documentation
+
+## Development Workflow
+
+### Setup
+\`\`\`bash
+npm install  # or: bun install, pod install, etc.
+npm run dev
+\`\`\`
+
+### Testing
+\`\`\`bash
+npm test
+npm test -- path/to/test
+\`\`\`
+
+### Build
+\`\`\`bash
+npm run build
+\`\`\`
+
+## Coding Conventions
+
+- **Language**: [TypeScript strict mode / Swift / Python / etc.]
+- **Formatting**: [Prettier / SwiftFormat / Black / etc.]
+- **Linting**: [ESLint / SwiftLint / Ruff / etc.]
+- **Naming**: Files: kebab-case.ts, Functions: camelCase, Types: PascalCase, Constants: UPPER_SNAKE_CASE
+EOF
+
+ok ".claude/CLAUDE.md template created"
+
+# ============================================================================
+# Create Root CLAUDE.md with Rules
+# ============================================================================
+step "Creating root CLAUDE.md with rules..."
+
+cat > "CLAUDE.md" <<'EOF'
+# Project Rules for Claude
+
+## Rules
+
+### 1. Always Plan Before Implementing
+- For any non-trivial task, analyze the codebase first before writing code
+- Use `/plan` or enter plan mode to design the approach
+- Identify all affected files and dependencies before making changes
+- Get user approval on the plan before implementing
+
+### 2. Use Parallel Agents for Speed
+- Analyze task decomposition: identify independent subtasks
+- Spawn multiple agents simultaneously for independent work streams
+- Examples: fix accessibility + fix SEO + fix performance in parallel
+- Use `Task` tool with multiple agents in a single message block
+
+### 3. Systematic Approach
+- Research first, implement second
+- Run tests/builds after changes to verify
+- Commit incrementally with descriptive messages
+- Re-verify after deployment
+
+## Architecture
+[Fill in: stack, key files, project structure]
+
+## Commands
+[Fill in: dev, build, test, deploy commands]
+EOF
+
+ok "Root CLAUDE.md with rules created"
+
+# ============================================================================
+# Create Memory Placeholder
+# ============================================================================
+step "Creating memory/MEMORY.md..."
+
+cat > "$CLAUDE_DIR/memory/MEMORY.md" <<'EOF'
+# Memory
+
+Cross-session learnings and patterns for this project.
+
+## Project Patterns
+
+- [Add confirmed patterns here as you discover them]
+
+## Common Issues & Solutions
+
+- [Add recurring issues and their solutions]
+
+## User Preferences
+
+- [Add user workflow preferences]
+
+---
+
+*This file persists across Claude sessions. Keep it concise (<200 lines).*
+EOF
+
+ok "Memory file created"
+
+# ============================================================================
+# Create .claudeignore
+# ============================================================================
+step "Creating .claudeignore..."
+
+cat > ".claudeignore" <<'EOF'
+# Dependencies
+node_modules/
+.pnp/
+.pnp.js
+vendor/
+Pods/
+Package.resolved
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Build outputs
+build/
+dist/
+out/
+.next/
+.nuxt/
+.output/
+DerivedData/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.p12
+credentials.json
+secrets.yaml
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Testing
+coverage/
+.nyc_output/
+*.lcov
+
+# Cache
+.cache/
+.parcel-cache/
+.turbo/
+.eslintcache
+.tsbuildinfo
+
+# OS
+Thumbs.db
+Desktop.ini
+EOF
+
+ok ".claudeignore created"
+
+# ============================================================================
+# Create README for .claude directory
+# ============================================================================
+step "Creating .claude/README.md..."
+
+cat > "$CLAUDE_DIR/README.md" <<'EOF'
+# .claude/ Directory
+
+This directory contains Claude Code configuration for this project.
+
+## Structure
+
+```
+.claude/
+├── settings.json        # Claude behavior settings
+├── keybindings.json     # Keyboard shortcuts
+├── hooks/               # Pre/post-execution hooks
+│   ├── scout-block/     # Security: block sensitive files
+│   └── format-check/    # Quality: validate formatting
+├── skills/              # Specialized knowledge modules
+│   ├── ios-pro/         # iOS development best practices
+│   └── react-typescript/ # React + TS patterns
+├── memory/              # Cross-session learnings
+│   └── MEMORY.md        # Persistent patterns (<200 lines)
+└── CLAUDE.md            # Project context for Claude
+
+```
+
+## Quick Reference
+
+### Settings
+- **Model**: Sonnet (configurable in settings.json)
+- **Permission Mode**: Ask (auto-approve safe tools)
+- **Context Optimization**: Auto-compress enabled
+
+### Hooks
+- **scout-block**: Prevents accidental exposure of `.env`, `.pem`, credentials
+- **format-check**: Validates formatting (disabled by default, requires prettier/swiftformat)
+
+### Skills
+Skills are automatically loaded when relevant to the task. See individual skill README files for details.
+
+### Memory
+Edit `memory/MEMORY.md` to add:
+- Confirmed project patterns
+- Common issues and solutions
+- User workflow preferences
+
+Keeps context between sessions.
+
+## Customization
+
+1. **Change model**: Edit `settings.json` → `"model": "opus"` or `"haiku"`
+2. **Add keybinding**: Edit `keybindings.json`
+3. **Enable format hook**: Edit `hooks/format-check/config.json` → `"enabled": true`
+4. **Add skill**: Create new directory in `skills/` with `README.md`
+
+## Learn More
+
+- [Claude Code Documentation](https://docs.anthropic.com/claude/docs/claude-code)
+- [Skills Guide](https://docs.anthropic.com/claude/docs/skills)
+- [Hooks Reference](https://docs.anthropic.com/claude/docs/hooks)
+
+EOF
+
+ok ".claude/README.md created"
+
+# ============================================================================
+# Summary
+# ============================================================================
+echo ""
+echo -e "${MAGENTA}═══════════════════════════════════════════════════════════${RESET}"
+echo -e "${GREEN}✓ Claude Code scaffolding complete!${RESET}"
+echo -e "${MAGENTA}═══════════════════════════════════════════════════════════${RESET}"
+echo ""
+echo -e "📁 Created:"
+echo -e "   ${CYAN}├── CLAUDE.md${RESET}                      (rules: plan first, parallel agents)"
+echo -e "   ${CYAN}├── .claudeignore${RESET}                  (exclude sensitive files)"
+echo -e "   ${CYAN}└── .claude/${RESET}"
+echo -e "   ${CYAN}    ├── settings.json${RESET}              (optimized config + hooks)"
+echo -e "   ${CYAN}    ├── keybindings.json${RESET}           (productivity shortcuts)"
+echo -e "   ${CYAN}    ├── CLAUDE.md${RESET}                  (project context template)"
+echo -e "   ${CYAN}    ├── .mcp.json.example${RESET}          (MCP server config)"
+echo -e "   ${CYAN}    ├── .ckignore${RESET}                  (scout-block patterns)"
+echo -e "   ${CYAN}    ├── hooks/${RESET}"
+echo -e "   ${CYAN}    │   ├── scout-block/${RESET}           (security - block .env, .pem)"
+echo -e "   ${CYAN}    │   └── format-check/${RESET}          (code quality - prettier)"
+echo -e "   ${CYAN}    ├── commands/${RESET}"
+echo -e "   ${CYAN}    │   ├── quick-fix.md${RESET}           (custom /quick-fix command)"
+echo -e "   ${CYAN}    │   └── feature.md${RESET}             (custom /feature command)"
+echo -e "   ${CYAN}    ├── skills/${RESET}"
+echo -e "   ${CYAN}    │   ├── ios-pro/${RESET}               (iOS SwiftUI + MVVM/TCA)"
+echo -e "   ${CYAN}    │   ├── react-typescript/${RESET}      (React + TS patterns)"
+echo -e "   ${CYAN}    │   ├── seo-optimization/${RESET}      (Lighthouse, WCAG, SEO, perf)"
+echo -e "   ${CYAN}    │   └── CLAUDEKIT-INSTALLATION.md${RESET} (40+ official skills guide)"
+echo -e "   ${CYAN}    ├── workflows/${RESET}"
+echo -e "   ${CYAN}    │   ├── development-rules.md${RESET}   (YAGNI, KISS, DRY)"
+echo -e "   ${CYAN}    │   └── orchestration-protocol.md${RESET} (complex task coordination)"
+echo -e "   ${CYAN}    ├── scripts/${RESET}"
+echo -e "   ${CYAN}    │   └── statusline.sh${RESET}          (git branch status bar)"
+echo -e "   ${CYAN}    ├── memory/${RESET}"
+echo -e "   ${CYAN}    │   └── MEMORY.md${RESET}              (cross-session learnings)"
+echo -e "   ${CYAN}    └── agents/${RESET}                    (empty - for custom agents)"
+echo ""
+echo -e "🚀 Next steps:"
+echo -e "   ${BLUE}1.${RESET} Review and customize ${CYAN}.claude/CLAUDE.md${RESET}"
+echo -e "   ${BLUE}2.${RESET} Try custom commands: ${GREEN}/quick-fix${RESET} or ${GREEN}/feature${RESET}"
+echo -e "   ${BLUE}3.${RESET} Optional: Install ClaudeKit skills (see ${CYAN}skills/CLAUDEKIT-INSTALLATION.md${RESET})"
+echo -e "   ${BLUE}4.${RESET} Enable format-check hook if needed (requires prettier/swiftformat)"
+echo -e "   ${BLUE}5.${RESET} Run ${GREEN}claude${RESET} to start coding"
+echo ""
+echo -e "💡 Tips:"
+echo -e "   • Use ${GREEN}/plan${RESET}, ${GREEN}/cook${RESET}, ${GREEN}/fix${RESET}, ${GREEN}/test${RESET} built-in commands"
+echo -e "   • Custom commands: ${GREEN}/quick-fix${RESET} [issue], ${GREEN}/feature${RESET} [description]"
+echo -e "   • Skills auto-load: iOS, React, ${GREEN}SEO/Lighthouse${RESET}, etc."
+echo -e "   • CLAUDE.md rules: always plan first, use parallel agents"
+echo -e "   • scout-block hook auto-prevents .env leaks"
+echo -e "   • Copy ${CYAN}.mcp.json.example${RESET} to ${CYAN}.mcp.json${RESET} and add your API keys"
+echo -e "   • Update ${CYAN}memory/MEMORY.md${RESET} with project learnings"
+echo ""
+echo -e "${MAGENTA}═══════════════════════════════════════════════════════════${RESET}"
