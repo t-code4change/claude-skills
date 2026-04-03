@@ -137,6 +137,40 @@ else
 fi
 
 # ============================================================================
+# Install Personal Skills from t-code4change/claude-skills
+# ============================================================================
+info "Installing personal skills from t-code4change/claude-skills..."
+
+if command -v git &>/dev/null; then
+    PERSONAL_SKILLS_TEMP=$(mktemp -d)
+    git clone --depth 1 --quiet https://github.com/t-code4change/claude-skills.git "$PERSONAL_SKILLS_TEMP" 2>/dev/null && {
+        # Install all skills (skip non-skill files/dirs)
+        for skill_dir in "$PERSONAL_SKILLS_TEMP"/*/; do
+            skill_name=$(basename "$skill_dir")
+            # Skip non-skill items
+            [[ "$skill_name" == "bin" ]] && continue
+            [[ ! -f "$skill_dir/SKILL.md" ]] && [[ ! -f "$skill_dir/README.md" ]] && continue
+            mkdir -p "$CLAUDE_DIR/skills/$skill_name"
+            cp -r "$skill_dir"* "$CLAUDE_DIR/skills/$skill_name/" 2>/dev/null || true
+            step "  ✓ $skill_name"
+        done
+        # Install personal commands (bin/commands/ → .claude/commands/)
+        if [[ -d "$PERSONAL_SKILLS_TEMP/bin/commands" ]]; then
+            mkdir -p "$CLAUDE_DIR/commands"
+            cp -r "$PERSONAL_SKILLS_TEMP/bin/commands/"* "$CLAUDE_DIR/commands/" 2>/dev/null || true
+            step "  ✓ personal commands"
+        fi
+        rm -rf "$PERSONAL_SKILLS_TEMP"
+        ok "Personal skills installed"
+    } || {
+        rm -rf "$PERSONAL_SKILLS_TEMP" 2>/dev/null || true
+        warn "Could not clone personal skills. Run manually: git clone https://github.com/t-code4change/claude-skills ~/claude-skills && ~/claude-skills/install.sh all"
+    }
+else
+    warn "git not found. Skipping personal skills installation."
+fi
+
+# ============================================================================
 # Create settings.json - Optimized Configuration
 # ============================================================================
 step "Creating settings.json..."
