@@ -28,6 +28,8 @@ references:
   - references/websocket-patterns.md
   - references/scaling.md
   - references/security.md
+  - references/backend-setup.md
+  - references/known-issues.md
 ---
 
 # Node.js Realtime Backend Skill
@@ -59,3 +61,5 @@ Build production-ready realtime systems: WebSocket, SSE, Redis pub/sub, event-dr
 ## Quick Start
 
 Load `references/architecture.md` for full patterns, `references/websocket-patterns.md` for Socket.io/SSE code, `references/scaling.md` for Redis setup, `references/security.md` for auth patterns.
+
+For **Hono + Drizzle + raw ws** production pattern: load `references/backend-setup.md` (stack, project structure, tsconfig, package.json, auth flow, Drizzle schema rules, WS architecture, EC2 deployment checklist) and `references/known-issues.md` (13 verified issues — apply ALL upfront before writing code).
